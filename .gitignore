@@ -1,0 +1,12 @@
+__pycache__
+dataset
+ckpt
+logs
+preprocessing/__pycache__
+preprocessing/esm_git
+preprocessing/esm_if_git
+preprocessing/logs
+preprocessing/openfold
+preprocessing/reproducing
+preprocessing/unimol_git
+TODO.txt
