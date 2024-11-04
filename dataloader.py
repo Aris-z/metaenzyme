@@ -9,7 +9,13 @@ import numpy as np
 import torch
 from utils import *
 import pickle
-
+from rdkit import Chem
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem
+from rdkit import DataStructs
+from rdkit.Chem.rdMolDescriptors import GetMorganFingerprintAsBitVect
+from torch_geometric.data import Data, DataLoader, Batch
+from torch_geometric.data import InMemoryDataset
 
 DATA_DICT = ['esp', 'MPEK', 'KM', 'DLKcat', 'HXKM']
 # 输入参数决定训练的任务对应需要加载的数据集，需要：1.处理数据csv文件，2.dataloader
@@ -19,17 +25,20 @@ class EspDataset(Dataset):
     def __init__(self, data):
         super().__init__()
         self.data = data
-        self.mol_conformers_path = '/root/workspace/enzyme/MetaEnzyme/dataset/mol_conformers'
+        # self.mol_conformers_path = '/root/workspace/enzyme/MetaEnzyme/dataset/mol_conformers'
+        # self.mol_2d_path = '/root/workspace/enzyme/MetaEnzyme/dataset/smile_2d.pt'
+        self.smiles_2d_data = torch.load('/root/workspace/enzyme/MetaEnzyme/dataset/smile_2d.pt')
 
     def __getitem__(self, index):
         v_smile_ID = self.data.iloc[index,:]['mol_ID']
         v_protein = self.data.iloc[index,:]['Protein']
         label = self.data.iloc[index,:]['Y']
+        
+        # assert os.path.exists(os.path.join(self.mol_conformers_path, f"{v_smile_ID}.pkl")), f"Molecular {v_smile_ID} comformer does not exist."
 
-        assert os.path.exists(os.path.join(self.mol_conformers_path, f"{v_smile_ID}.pkl")), f"Molecular {v_smile_ID} comformer does not exist."
-
-        with open(os.path.join(self.mol_conformers_path, f"{v_smile_ID}.pkl"), "rb") as file:
-            v_smile = pickle.load(file)
+        # with open(os.path.join(self.mol_conformers_path, f"{v_smile_ID}.pkl"), "rb") as file:
+        #     v_smile = pickle.load(file)
+        v_smile = self.smiles_2d_data[f'{v_smile_ID}']
 
 
         if len(v_protein) >= 1024:
@@ -58,14 +67,17 @@ class MultiDataset(Dataset):
         super().__init__()
         self.data = data
         self.mol_conformers_path = '/root/workspace/enzyme/MetaEnzyme/dataset/mol_conformers'
+        # self.mol_2d_path = '/root/workspace/enzyme/MetaEnzyme/dataset/smile_2d.pt'
+        self.smiles_2d_data = torch.load('/root/workspace/enzyme/MetaEnzyme/dataset/smile_2d.pt')
 
     def __getitem__(self, index):
         v_smile_ID = self.data.iloc[index,:]['mol_ID']
 
-        assert os.path.exists(os.path.join(self.mol_conformers_path, f"{v_smile_ID}.pkl")), f"Molecular {v_smile_ID} comformer does not exist."
+        # assert os.path.exists(os.path.join(self.mol_conformers_path, f"{v_smile_ID}.pkl")), f"Molecular {v_smile_ID} comformer does not exist."
 
-        with open(os.path.join(self.mol_conformers_path, f"{v_smile_ID}.pkl"), "rb") as file:
-            v_smile = pickle.load(file)
+        # with open(os.path.join(self.mol_conformers_path, f"{v_smile_ID}.pkl"), "rb") as file:
+        #     v_smile = pickle.load(file)
+        v_smile = self.smiles_2d_data[f'{v_smile_ID}']
 
 
         v_protein = self.data.iloc[index,:]['Protein']
@@ -175,19 +187,11 @@ def protein_preprocessing(pro_seq, protein_batch_converter):
     # return 0
 
 def mol_preprocessing(mol_seq):
-    # params = {'data_type': 'molecule', 'remove_hs': False}
+    # mol_seq, label = mol_batch_collate_fn(mol_seq)
 
-    # mol_seq = np.array(mol_seq)
-    # datahub = DataHub(data=mol_seq, 
-    #                 task='repr', 
-    #                 is_train=False, 
-    #                 **params,
-    #             )
-    # mol_seq = datahub.data['unimol_input']
+    # net_input, _ = decorate_torch_batch((mol_seq, label))
 
-    mol_seq, label = mol_batch_collate_fn(mol_seq)
-
-    net_input, _ = decorate_torch_batch((mol_seq, label))
-
-    return net_input
+    return Batch.from_data_list(
+                mol_seq
+            )
     # return mol_seq

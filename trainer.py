@@ -5,6 +5,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from tqdm import tqdm
 import torch.nn.functional as F
 import os
+from molebert import GNN, GNN_graphpred
 
 
 
@@ -36,15 +37,27 @@ class Trainer(object):
         # total training iterations
         # t_total = len(train_dataloader) // config.gradient_accumulation_steps \
         #             * config.num_train_epochs
+        model_1 = GNN_graphpred(5, 300, 1, JK = "last", drop_ratio = 0.5, graph_pooling = "mean", gnn_type = "gin")
+        model_1.from_pretrained('/root/workspace/enzyme/MetaEnzyme/Mole-BERT.pth')
+        model_1.to("cuda:0")
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         if torch.cuda.device_count() > 1:        # 判断GPU个数
             model = nn.DataParallel(model) 
         
         model = model.to(device)
+        # model.load_state_dict(torch.load('/root/workspace/enzyme/MetaEnzyme/ckpt/comparative_checkpoint_1_406__1104_model_0.pt'))
+        # for param in model.parameters():
+        #     param.requires_grad = False
         model.train()
 
-        optimizer = AdamW(model.parameters(), lr=self.lr, eps=self.eps, weight_decay=self.weight_decay)
+        params = [
+            {"params": model_1.parameters(), "lr": 1e-4},
+            {"params": model.parameters(), "lr": 5e-5}
+        ]
+
+        optimizer = AdamW(params, lr=self.lr, eps=self.eps, weight_decay=self.weight_decay)
         # optimizer = SGD(model.parameters(), lr=self.lr, momentum=0.9)
 
 
@@ -70,6 +83,7 @@ class Trainer(object):
 
 
         global_step, global_loss, global_acc = 0, 0.0, 0.0
+        model_1.zero_grad()
         model.zero_grad()
 
         for epoch in range(self.num_train_epochs):
@@ -80,11 +94,14 @@ class Trainer(object):
                 # test = torch.rand(32,1).to(device)
 
                 # # 这个地方应该要先把序列表示成特征才能放到cuda里面去
-                for k in input_mol.keys():
-                    input_mol[k] = input_mol[k].to(device)
+                # for k in input_mol.keys():
+                #     input_mol[k] = input_mol[k].to(device)
+                input_mol = input_mol.to(device)
 
                 input_protein = input_protein.to(device)
                 protein_mask = protein_mask.to(device)
+
+                _, input_mol = model_1(input_mol.x, input_mol.edge_index, input_mol.edge_attr, input_mol.batch)
 
                 # 特征计算
                 mol_features, protein_features = model(input_mol, input_protein, protein_mask)
@@ -129,7 +146,8 @@ class Trainer(object):
 
                     if scheduler:
                         scheduler.step() 
-                        
+
+                    model_1.zero_grad()
                     model.zero_grad()
 
                     if global_step % self.logging_steps == 0:
@@ -139,9 +157,9 @@ class Trainer(object):
 
                     if (self.save_steps > 0 and global_step % self.save_steps == 0):
                         # saving checkpoint
-                        save_checkpoint(epoch, global_step, model, self.task)
+                        save_checkpoint(epoch, global_step, model, model_1, self.task)
             logger.info("End of Epoch: {}".format(epoch))
-        save_checkpoint(epoch, global_step, model, self.task)
+        save_checkpoint(epoch, global_step, model, model_1, self.task)
 
         return global_step, global_loss / global_step
     
@@ -150,6 +168,13 @@ class Trainer(object):
         '''
         Trains the model.
         '''
+        self.model_1 = GNN_graphpred(5, 300, 1, JK = "last", drop_ratio = 0.5, graph_pooling = "mean", gnn_type = "gin")
+        # self.model_1.from_pretrained('/root/workspace/enzyme/MetaEnzyme/ckpt/comparative_checkpoint_1_400_model_1.pt')
+        self.model_1.load_state_dict(torch.load('/root/workspace/enzyme/MetaEnzyme/ckpt/comparative_checkpoint_1_400_model_1.pt'))
+        for param in self.model_1.parameters():
+            param.requires_grad = False
+        self.model_1.to("cuda:0")
+
         self.model = model
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -164,12 +189,16 @@ class Trainer(object):
         # for name, param in model.named_parameters():
         #     if "downhead" not in name:
         #         param.requires_grad = False
+        for name, param in self.model.named_parameters():
+            if "downhead"  not in name:
+                param.requires_grad = False
 
         self.model.train()
 
         params = [
-            {'params': [p for n, p in self.model.named_parameters() if "downhead" in n], 'lr': 3e-4},
-            {'params': [p for n, p in self.model.named_parameters() if "downhead" not in n], 'lr': self.lr}
+            {'params': [p for n, p in self.model.named_parameters() if "downhead" in n], 'lr': 3e-3},
+            # {'params': [p for n, p in self.model.named_parameters() if "downhead" not in n], 'lr': self.lr*0.1},
+            # {"params": self.model_1.parameters(), "lr": self.lr*0.1}
         ]
         # optimizer = AdamW(self.model.parameters(), lr=self.lr, eps=self.eps, weight_decay=self.weight_decay)
         optimizer = AdamW(params, lr=self.lr, eps=self.eps, weight_decay=self.weight_decay)
@@ -200,6 +229,7 @@ class Trainer(object):
 
         global_step, global_loss, global_acc = 0, 0.0, 0.0
         self.model.zero_grad()
+        self.model_1.zero_grad()
 
         for epoch in range(self.num_train_epochs):
             for step, batch in enumerate(tqdm(train_dataloader, desc="Training")):
@@ -208,17 +238,18 @@ class Trainer(object):
                 # print(input_mol.shape)
 
                 # # 这个地方应该要先把序列表示成特征才能放到cuda里面去
-                for k in input_mol.keys():
-                    input_mol[k] = input_mol[k].to(self.device)
+                # for k in input_mol.keys():
+                #     input_mol[k] = input_mol[k].to(self.device)
+                input_mol = input_mol.to(self.device)
 
                 input_protein = input_protein.to(self.device)
                 label = label.to(self.device)
                 protein_mask = protein_mask.to(self.device)
 
+                _, input_mol = self.model_1(input_mol.x, input_mol.edge_index, input_mol.edge_attr, input_mol.batch)
+
                 # 特征计算
                 output = self.model(input_mol, input_protein, protein_mask)
-                print("\n")
-                print((torch.argmax(F.sigmoid(output), dim=1) == label).sum().item() / len(label))
                 # normalized features
                 # mol_features = mol_features / mol_features.norm(dim=-1, keepdim=True)
                 # protein_features = protein_features / protein_features.norm(dim=-1, keepdim=True)
@@ -244,6 +275,7 @@ class Trainer(object):
                         scheduler.step() 
                         
                     self.model.zero_grad()
+                    self.model_1.zero_grad()
 
                     if global_step % self.eval_steps == 0:
                         acc, eval_loss = self.eval(validation_dataloader)
@@ -257,10 +289,10 @@ class Trainer(object):
 
                     if (self.save_steps > 0 and global_step % self.save_steps == 0):
                         # saving checkpoint
-                        save_checkpoint(epoch, global_step, self.model, self.task)
+                        save_checkpoint(epoch, global_step, self.model, self.model_1, self.task)
 
             logger.info("End of Epoch: {}".format(epoch))
-        save_checkpoint(epoch, global_step, self.model, self.task)
+        save_checkpoint(epoch, global_step, self.model, self.model_1, self.task)
 
         return global_step, global_loss / global_step
     
@@ -271,13 +303,15 @@ class Trainer(object):
             for _, batch in enumerate(tqdm(val_dataloader, desc='Evaluation')):
                 global_step += 1
                 input_mol, input_protein, protein_mask, label = batch
-                for k in input_mol.keys():
-                    input_mol[k] = input_mol[k].to(self.device)
+                # for k in input_mol.keys():
+                #     input_mol[k] = input_mol[k].to(self.device)
+                input_mol = input_mol.to(self.device)
                 input_protein = input_protein.to(self.device)
                 label = label.to(self.device)
-                protein_mask = protein_mask.to(self.device)
+                protein_mask = protein_mask.to(self.device)         
 
                 # print(input_mol.device)
+                _, input_mol = self.model_1(input_mol.x, input_mol.edge_index, input_mol.edge_attr, input_mol.batch)
 
                 # 特征计算
                 output = self.model(input_mol, input_protein, protein_mask)
@@ -295,17 +329,19 @@ class Trainer(object):
         return acc, global_loss
     
 
-def save_checkpoint(epoch, global_step, model, task):
+def save_checkpoint(epoch, global_step, model, model_1, task):
     checkpoint_path = '/root/workspace/enzyme/MetaEnzyme/ckpt'
-    checkpoint_path = os.path.join(checkpoint_path, f'{task}_checkpoint_{epoch}_{global_step}.pt')
+    checkpoint_path_0 = os.path.join(checkpoint_path, f'{task}_checkpoint_{epoch}_{global_step}_model_0.pt')
+    checkpoint_path_1 = os.path.join(checkpoint_path, f'{task}_checkpoint_{epoch}_{global_step}_model_1.pt')
     save_num = 0
-    while (save_num < 10):
-        try:
-            torch.save(model.state_dict(), checkpoint_path)
-            print("Save checkpoint to {}".format(checkpoint_path))
-            break
-        except:
-            save_num += 1
-    if save_num == 10:
-        logger.info("Failed to save checkpoint after 10 trails.")
+    # while (save_num < 10):
+        # try:
+    torch.save(model.state_dict(), checkpoint_path_0)
+    torch.save(model_1.state_dict(), checkpoint_path_1)
+    print("Save checkpoint to {}".format(checkpoint_path))
+            # break
+        # except:
+        #     save_num += 1
+    # if save_num == 10:
+    #     logger.info("Failed to save checkpoint after 10 trails.")
     return

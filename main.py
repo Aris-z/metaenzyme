@@ -48,9 +48,9 @@ def main():
     parser.add_argument('--task', type=str, choices=['comparative', 'mlp', 'infer'], default='comparative')
 
     parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--lr', type=float, default=5e-6)
+    parser.add_argument('--lr', type=float, default=5e-5)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=8)
-    parser.add_argument('--checkpoint', type=str, default='/root/workspace/enzyme/MetaEnzyme/ckpt/comparative_checkpoint_1_400.pt')
+    parser.add_argument('--checkpoint', type=str, default='/root/workspace/enzyme/MetaEnzyme/ckpt/comparative_checkpoint_1_400_model_0.pt')
 
 
     args = parser.parse_args() 

@@ -7,6 +7,7 @@ from unimol_tools.models import UniMolModel
 import torch.nn.functional as F
 from collections import OrderedDict
 import numpy as np
+from molebert import GNN, GNN_graphpred
 
 
 class LayerNorm(nn.LayerNorm):
@@ -74,15 +75,25 @@ class MetaEnzyme(nn.Module):
         for param in self.esm_model.parameters():
             param.requires_grad = False
 
-        self.unimol_model = UniMolModel(output_dim=1, data_type='molecule', remove_hs=False)
-        for param in self.unimol_model.parameters():
-            param.requires_grad = False
+        # self.unimol_model = UniMolModel(output_dim=1, data_type='molecule', remove_hs=False)
+        # for param in self.unimol_model.parameters():
+        #     param.requires_grad = False
+        # self.unimol_model = GNN_graphpred(5, 300, 1, JK = "last", drop_ratio = 0.5, graph_pooling = "mean", gnn_type = "gin")
+        # self.unimol_model.from_pretrained('/root/workspace/enzyme/MetaEnzyme/Mole-BERT.pth')
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
 
         #padding的时候是否需要mask
-        self.mol_project_layer = Transformer(512, 8, 8)
+        # self.mol_project_layer = Transformer(512, 8, 8)
+        self.mol_project_layer = nn.Sequential(OrderedDict([
+                  ('unimol_mlp1', nn.Linear(300, 1024)),
+                  ('gelu1', nn.GELU()),
+                  ('unimol_mlp2', nn.Linear(1024, 512)),
+                  ('gelu2', nn.GELU()),
+                  ('unimol_mlp3', nn.Linear(512, 256)),
+                  ('gelu2', nn.GELU()),
+                ]))
 
         self.protein_project_layer = Transformer(1280, 8, 8)
 
@@ -98,27 +109,19 @@ class MetaEnzyme(nn.Module):
             else:
                 raise NotImplementedError
 
-        self.mol_mlp = nn.Linear(512, 256)
-
         self.protein_mlp = nn.Linear(1280, 256)
 
         # self.MLP_layer = nn.Linear()
 
     def forward(self, mol_rep, protein_rep, protein_mask):
         ## mask屏蔽padding
-        mol_rep, mol_mask, protein_rep = self.embedding(mol_rep, protein_rep)
+        protein_rep = self.embedding(mol_rep, protein_rep)
 
         # device = test.device
         # mol_rep = torch.rand(4,512,512).to(device)
         # protein_rep = torch.rand(4,512,1280).to(device)
         #####################
-        mol_rep, _ = self.mol_project_layer(mol_rep, mol_mask)
-        seq_lens = (mol_mask == False).sum(1)
-        mol_seq_represents = []
-        for i, token_len in enumerate(seq_lens.tolist()):
-            mol_seq_represents.append(mol_rep[i, :token_len, :].mean(0))
-        mol_rep = self.mol_mlp(torch.stack(mol_seq_represents))
-
+        mol_rep = self.mol_project_layer(mol_rep)
 
         protein_rep, _ = self.protein_project_layer(protein_rep, protein_mask)
         seq_lens = (protein_mask == False).sum(1)
@@ -159,39 +162,17 @@ class MetaEnzyme(nn.Module):
 
     def embedding(self, mol_seq, pro_seq):
         # batch_tokens = batch_tokens.to(device)
-        with torch.no_grad():
+        with torch.no_grad():            
             results = self.esm_model(pro_seq, repr_layers=[33], return_contacts=False)
 
         protein_rep = results["representations"][33].detach()
         del results
 
-        with torch.no_grad():
-            # mol_rep = self.unimol.get_repr(mol_seq, return_atomic_reprs=True)['atomic_reprs'].cpu().detach()
-            # mol_output = self.unimol_model.get_repr(mol_seq, return_atomic_reprs=True)['atomic_reprs']
-
-            mol_outputs = self.unimol_model(**mol_seq,
-                                return_repr=True,
-                                return_atomic_reprs=True)
-            assert isinstance(mol_outputs, dict)
-
-            mol_rep = []
-            mol_rep_output = []
-            mol_rep_output_mask = []
-
-            mol_rep.extend(item for item in mol_outputs['atomic_reprs'])
-            for item in mol_rep:
-                padding_mol, padding_mask = self.pad_to_shape(item)
-                mol_rep_output.append(padding_mol)
-                mol_rep_output_mask.append(padding_mask)
-
-            mol_rep = torch.stack(mol_rep_output)
-            mol_mask = torch.stack(mol_rep_output_mask)
-
         # # mol_rep = mol_rep.detach().cpu()
         # mol_rep = torch.rand(protein_rep.shape[0], 512, 512)
         # protein_rep = protein_rep.detach().cpu()
 
-        return mol_rep, mol_mask, protein_rep
+        return protein_rep
     
     
     # def pad_to_shape(self, tensor, shape=1026):
